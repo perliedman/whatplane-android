@@ -76,7 +76,7 @@ public class WhatPlane extends Activity implements LocationListener {
         });
         
         updater.updateLocation(locationManager.getLastKnownLocation(providerName));
-        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60 * 1000, 0f, this);
+        locationManager.requestLocationUpdates(providerName, 60 * 1000, 0f, this);
     }
 
     @Override
