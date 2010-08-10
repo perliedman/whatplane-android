@@ -19,6 +19,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.DialogInterface;
+import android.location.Criteria;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -54,7 +55,8 @@ public class WhatPlane extends Activity implements LocationListener {
             return;
         }
         
-        LocationProvider provider = locationManager.getProvider(LocationManager.GPS_PROVIDER);
+        String providerName = locationManager.getBestProvider(new Criteria(), true);
+        LocationProvider provider = locationManager.getProvider(providerName);
         if (provider == null) {
             showDialog(DIALOG_NO_LOCATION);
             return;
@@ -73,6 +75,7 @@ public class WhatPlane extends Activity implements LocationListener {
             }
         });
         
+        updater.updateLocation(locationManager.getLastKnownLocation(providerName));
         locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60 * 1000, 0f, this);
     }
 
