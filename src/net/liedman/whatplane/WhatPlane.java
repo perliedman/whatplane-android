@@ -18,7 +18,12 @@ import org.json.JSONObject;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
+import android.content.Context;
 import android.content.DialogInterface;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.location.Criteria;
 import android.location.Location;
 import android.location.LocationListener;
@@ -31,16 +36,19 @@ import android.view.View;
 import android.view.Window;
 import android.view.View.OnClickListener;
 import android.widget.Button;
-import android.widget.ExpandableListAdapter;
 import android.widget.ExpandableListView;
 import android.widget.TextView;
 
-public class WhatPlane extends Activity implements LocationListener {
+public class WhatPlane extends Activity implements LocationListener, SensorEventListener {
     private static final int DIALOG_NO_LOCATION = 0;
     private DecimalFormat coordFormat = new DecimalFormat("##0.0000");
     private Updater updater = new Updater();
     private Handler handler = new Handler();
-    private DateFormat dateFormat = DateFormat.getTimeInstance(DateFormat.SHORT);
+    private DateFormat dateFormat;
+    private DateFormat timeFormat;
+    private PlaneListAdapter planeListAdapter;
+    private SensorManager sensorManager;
+    private Sensor sensor;
     
     /** Called when the activity is first created. */
     @Override
@@ -48,6 +56,9 @@ public class WhatPlane extends Activity implements LocationListener {
         super.onCreate(savedInstanceState);
         requestWindowFeature(Window.FEATURE_PROGRESS);
         setContentView(R.layout.main);
+
+        sensorManager = (SensorManager)getSystemService(Context.SENSOR_SERVICE);
+        sensor = sensorManager.getDefaultSensor(Sensor.TYPE_ORIENTATION);
         
         LocationManager locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         if (locationManager == null) {
@@ -62,10 +73,12 @@ public class WhatPlane extends Activity implements LocationListener {
             return;
         }
         
+        dateFormat = android.text.format.DateFormat.getDateFormat(getApplicationContext());
+        timeFormat = android.text.format.DateFormat.getTimeFormat(getApplicationContext());        
+        
         new Thread(updater).start();
 
         Button updateButton = (Button)findViewById(R.id.UpdateButton);
-        updateButton.setEnabled(false);
         updateButton.setOnClickListener(new OnClickListener() {
             public void onClick(View arg0) {
                 Window window = getWindow();
@@ -75,8 +88,24 @@ public class WhatPlane extends Activity implements LocationListener {
             }
         });
         
-        updater.updateLocation(locationManager.getLastKnownLocation(providerName));
+        Location lastKnownLocation = locationManager.getLastKnownLocation(providerName);
+        updater.updateLocation(lastKnownLocation);
         locationManager.requestLocationUpdates(providerName, 60 * 1000, 0f, this);
+
+        TextView textView = (TextView) findViewById(R.id.CoordinateLabel);
+        textView.setText("Waiting for location...");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        sensorManager.unregisterListener(this);
     }
 
     @Override
@@ -101,14 +130,10 @@ public class WhatPlane extends Activity implements LocationListener {
     }
 
     public void onLocationChanged(Location loc) {
-        TextView textView = (TextView) findViewById(R.id.CoordinateLabel);
-        textView.setText(formatLocation(loc));
         Window window = getWindow();
         window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_INDETERMINATE_ON);
         window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_ON);
         updater.updateLocation(loc);
-        Button updateButton = (Button)findViewById(R.id.UpdateButton);
-        updateButton.setEnabled(true);
     }
 
     public void onProviderDisabled(String arg0) {
@@ -126,14 +151,27 @@ public class WhatPlane extends Activity implements LocationListener {
         
     }
 
+    public void onAccuracyChanged(Sensor arg0, int arg1) {
+        // TODO Auto-generated method stub
+        
+    }
+
+    public void onSensorChanged(SensorEvent se) {
+        if (planeListAdapter != null) {
+            planeListAdapter.setHeading(se.values[0]);
+        }
+    }
+
     private String formatLocation(Location loc) {
         double latitude = loc.getLatitude();
         double longitude = loc.getLongitude();
+        Date now = new Date(loc.getTime());
         return (latitude >= 0f ? "N" : "S") + coordFormat.format(latitude) 
                 + ", " +
                 (longitude >= 0f ? "E" : "W")+ coordFormat.format(longitude)
                 + ", "
-                + dateFormat.format(new Date(loc.getTime()));
+                + timeFormat.format(now) + " " 
+                + dateFormat.format(now);
     }       
     
     private class Updater implements Runnable {
@@ -162,6 +200,13 @@ public class WhatPlane extends Activity implements LocationListener {
                     
                     if (location != null) {                    
                         updatePlaneList();
+                    } else {
+                        handler.post(new Runnable() {                            
+                            public void run() {
+                                Window window = getWindow();
+                                window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_OFF);
+                            }
+                        });
                     }
                 }
             } catch (InterruptedException e) {
@@ -170,6 +215,13 @@ public class WhatPlane extends Activity implements LocationListener {
         }
 
         private void updatePlaneList() {
+            handler.post(new Runnable() {
+                public void run() {
+                    Button updateButton = (Button)findViewById(R.id.UpdateButton);
+                    updateButton.setEnabled(false);
+                }
+            });
+            
             InputStream stream = null;
             InputStreamReader reader = null;
             try {
@@ -187,6 +239,7 @@ public class WhatPlane extends Activity implements LocationListener {
                 JSONArray planes = new JSONArray(b.toString());
                 final List<String> groups = new ArrayList<String>();
                 final List<String[]> children = new ArrayList<String[]>();
+                List<Float> bearings = new ArrayList<Float>();
                 for (int i = 0; i < planes.length(); i++) {
                     JSONObject plane = planes.getJSONObject(i);
                     String callsign = plane.getString("callsign");
@@ -208,15 +261,27 @@ public class WhatPlane extends Activity implements LocationListener {
                     
                     groups.add(shortInfo);
                     children.add(info.toArray(new String[0]));
+                    bearings.add(new Float(plane.getDouble("course")));
+                }
+                
+                final float[] bf = new float[bearings.size()];
+                for (int i = 0; i < bf.length; i++) {
+                    bf[i] = bearings.get(i).floatValue();
                 }
                 
                 handler.post(new Runnable() {
                     public void run() {
-                        ExpandableListAdapter adapter = new PlaneListAdapter(WhatPlane.this, groups.toArray(new String[0]), children.toArray(new String[0][0]));
+                        planeListAdapter = new PlaneListAdapter(WhatPlane.this, groups.toArray(new String[0]), children.toArray(new String[0][0]), bf);
                         ExpandableListView planeList = (ExpandableListView) findViewById(R.id.PlaneList);
-                        planeList.setAdapter(adapter);
+                        planeList.setAdapter(planeListAdapter);
                         Window window = getWindow();
                         window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_OFF);
+
+                        TextView textView = (TextView) findViewById(R.id.CoordinateLabel);
+                        textView.setText(formatLocation(location));
+
+                        Button updateButton = (Button)findViewById(R.id.UpdateButton);
+                        updateButton.setEnabled(true);
                     }
                 });
                 

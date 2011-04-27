@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+  xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/planeRow"
+  android:layout_width="fill_parent"
+  android:layout_height="wrap_content">
+  <TextView android:id="@+id/infoLabel" android:gravity="center_vertical" android:paddingLeft="36dip" android:minHeight="32dip" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_weight="1"/>
+  <net.liedman.whatplane.CompassView android:id="@+id/compass" android:minHeight="30dip" minWidth="30dip" android:layout_width="30dp" android:layout_height="30dp" android:layout_gravity="center_vertical"/>
+</LinearLayout>
