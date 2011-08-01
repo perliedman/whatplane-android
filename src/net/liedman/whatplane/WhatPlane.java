@@ -3,14 +3,24 @@ package net.liedman.whatplane;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.MalformedURLException;
-import java.net.URL;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.text.DateFormat;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
+import net.liedman.whatplane.filter.Filter;
+import net.liedman.whatplane.filter.LowPassFilter;
+
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.impl.client.BasicResponseHandler;
+import org.apache.http.impl.client.DefaultHttpClient;
+import org.apache.http.params.BasicHttpParams;
+import org.apache.http.params.HttpConnectionParams;
+import org.apache.http.params.HttpParams;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -41,6 +51,7 @@ import android.widget.TextView;
 
 public class WhatPlane extends Activity implements LocationListener, SensorEventListener {
     private static final int DIALOG_NO_LOCATION = 0;
+    private static final String TAG = "WhatPlane";
     private DecimalFormat coordFormat = new DecimalFormat("##0.0000");
     private Updater updater = new Updater();
     private Handler handler = new Handler();
@@ -48,7 +59,10 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
     private DateFormat timeFormat;
     private PlaneListAdapter planeListAdapter;
     private SensorManager sensorManager;
+    private LocationManager locationManager;
+    private String locationProviderName;
     private Sensor sensor;
+    private Filter compassFilter = new LowPassFilter(3);
     
     /** Called when the activity is first created. */
     @Override
@@ -60,14 +74,14 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
         sensorManager = (SensorManager)getSystemService(Context.SENSOR_SERVICE);
         sensor = sensorManager.getDefaultSensor(Sensor.TYPE_ORIENTATION);
         
-        LocationManager locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         if (locationManager == null) {
             showDialog(DIALOG_NO_LOCATION);
             return;
         }
         
-        String providerName = locationManager.getBestProvider(new Criteria(), true);
-        LocationProvider provider = locationManager.getProvider(providerName);
+        locationProviderName = locationManager.getBestProvider(new Criteria(), true);
+        LocationProvider provider = locationManager.getProvider(locationProviderName);
         if (provider == null) {
             showDialog(DIALOG_NO_LOCATION);
             return;
@@ -88,24 +102,22 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
             }
         });
         
-        Location lastKnownLocation = locationManager.getLastKnownLocation(providerName);
+        Location lastKnownLocation = locationManager.getLastKnownLocation(locationProviderName);
         updater.updateLocation(lastKnownLocation);
-        locationManager.requestLocationUpdates(providerName, 60 * 1000, 0f, this);
-
-        TextView textView = (TextView) findViewById(R.id.CoordinateLabel);
-        textView.setText("Waiting for location...");
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI);
+        locationManager.requestLocationUpdates(locationProviderName, 60 * 1000, 0f, this);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
         sensorManager.unregisterListener(this);
+        locationManager.removeUpdates(this);
     }
 
     @Override
@@ -157,8 +169,9 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
     }
 
     public void onSensorChanged(SensorEvent se) {
+        compassFilter.feed(se.values[0]);
         if (planeListAdapter != null) {
-            planeListAdapter.setHeading(se.values[0]);
+            planeListAdapter.setHeading(compassFilter.getValue());
         }
     }
 
@@ -222,24 +235,16 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
                 }
             });
             
-            InputStream stream = null;
-            InputStreamReader reader = null;
+            HttpClient httpClient = new DefaultHttpClient(getHttpParams());
+            
             try {
-                URL url = new URL("http://www.liedman.net/whatplane/json/closest?lat=" 
+                URI url = new URI("http://www.liedman.net/whatplane/json/closest?lat=" 
                         + location.getLatitude() + "&lon=" + location.getLongitude());
-                stream = url.openStream();
-                reader = new InputStreamReader(stream);
-                StringBuilder b = new StringBuilder();
-                char[] buffer = new char[1024];
-                int charsRead;
-                while ((charsRead = reader.read(buffer)) > 0) {
-                    b.append(buffer, 0, charsRead);
-                }
-                
-                JSONArray planes = new JSONArray(b.toString());
-                final List<String> groups = new ArrayList<String>();
-                final List<String[]> children = new ArrayList<String[]>();
-                List<Float> bearings = new ArrayList<Float>();
+                String response = httpClient.execute(new HttpGet(url), new BasicResponseHandler());
+                JSONArray planes = new JSONArray(response);
+                final String[] groups = new String[planes.length()];
+                final String[][] children = new String[planes.length()][];
+                final float bearings[] = new float[planes.length()];
                 for (int i = 0; i < planes.length(); i++) {
                     JSONObject plane = planes.getJSONObject(i);
                     String callsign = plane.getString("callsign");
@@ -259,57 +264,53 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
                         info.add("Heading: " + plane.getString("heading_octant") + " (" + heading + "°)");
                     }
                     
-                    groups.add(shortInfo);
-                    children.add(info.toArray(new String[0]));
-                    bearings.add(new Float(plane.getDouble("course")));
+                    groups[i] = shortInfo;
+                    children[i] = info.toArray(new String[0]);
+                    bearings[i] = (float)plane.getDouble("course");
                 }
-                
-                final float[] bf = new float[bearings.size()];
-                for (int i = 0; i < bf.length; i++) {
-                    bf[i] = bearings.get(i).floatValue();
-                }
-                
+                                
                 handler.post(new Runnable() {
                     public void run() {
-                        planeListAdapter = new PlaneListAdapter(WhatPlane.this, groups.toArray(new String[0]), children.toArray(new String[0][0]), bf);
                         ExpandableListView planeList = (ExpandableListView) findViewById(R.id.PlaneList);
-                        planeList.setAdapter(planeListAdapter);
-                        Window window = getWindow();
-                        window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_OFF);
+                        if (planeListAdapter == null) {
+                            planeListAdapter = new PlaneListAdapter(WhatPlane.this, groups, children, bearings);
+                            planeList.setAdapter(planeListAdapter);
+                        } else {
+                            planeListAdapter.setData(groups, children, bearings);
+                        }
 
                         TextView textView = (TextView) findViewById(R.id.CoordinateLabel);
                         textView.setText(formatLocation(location));
-
-                        Button updateButton = (Button)findViewById(R.id.UpdateButton);
-                        updateButton.setEnabled(true);
                     }
                 });
                 
                 
-            } catch (MalformedURLException e) {
-                e.printStackTrace();
+            } catch (URISyntaxException e) {
+                Log.e(TAG, "Error getting aircraft info", e);
             } catch (IOException e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
+                Log.e(TAG, "Error getting aircraft info", e);
             } catch (JSONException e) {
-                // TODO Auto-generated catch block
-                e.printStackTrace();
-            } finally {
-                if (reader != null) {
-                    try {
-                        reader.close();
-                    } catch (IOException e) {
-                        // Ok, forget it
+                Log.e(TAG, "Error getting aircraft info", e);
+            } catch (RuntimeException e) {
+                Log.e(TAG, "Error getting aircraft info", e);
+            } finally {                
+                handler.post(new Runnable() {                    
+                    public void run() {
+                        Window window = getWindow();
+                        window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_OFF);
+                        
+                        Button updateButton = (Button)findViewById(R.id.UpdateButton);
+                        updateButton.setEnabled(true);
                     }
-                }
-                if (stream != null) {
-                    try {
-                        stream.close();
-                    } catch (IOException e) {
-                        // Ok, forget it
-                    }
-                }
+                });
             }
+        }
+
+        private HttpParams getHttpParams() {
+            HttpParams params = new BasicHttpParams();
+            HttpConnectionParams.setConnectionTimeout(params, 15000);
+            HttpConnectionParams.setSoTimeout(params, 25000);
+            return params;
         }
 
         private void addIfNotNullOrEmpty(List<String> list, String title, JSONObject object, String key, String unit) {

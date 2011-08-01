@@ -20,13 +20,18 @@ public class PlaneListAdapter extends BaseExpandableListAdapter {
     private float[] bearings;
     private List<CompassView> compassViews = new ArrayList<CompassView>(); 
     private AbsListView.LayoutParams textLayoutParams = new AbsListView.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT, 24);
+            ViewGroup.LayoutParams.WRAP_CONTENT, 32);
 
     public PlaneListAdapter(Activity owner, String[] groups, String[][] children, float[] bearings) {
         this.owner = owner;
+        setData(groups, children, bearings);
+    }
+    
+    public void setData(String[] groups, String[][] children, float[] bearings) {
         this.groups = groups;
         this.children = children;
         this.bearings = bearings;
+        notifyDataSetChanged();
     }
     
     public Object getChild(int groupPosition, int childPosition) {
@@ -88,7 +93,7 @@ public class PlaneListAdapter extends BaseExpandableListAdapter {
     }
 
     public boolean isChildSelectable(int groupPosition, int childPosition) {
-        return true;
+        return false;
     }
 
     public boolean hasStableIds() {
