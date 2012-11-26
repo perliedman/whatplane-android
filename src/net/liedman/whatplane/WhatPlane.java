@@ -50,6 +50,7 @@ import android.widget.ExpandableListView;
 import android.widget.TextView;
 
 public class WhatPlane extends Activity implements LocationListener, SensorEventListener {
+    private static final int TWO_MINUTES = 1000 * 60 * 2;
     private static final int DIALOG_NO_LOCATION = 0;
     private static final String TAG = "WhatPlane";
     private DecimalFormat coordFormat = new DecimalFormat("##0.0000");
@@ -95,9 +96,6 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
         Button updateButton = (Button)findViewById(R.id.UpdateButton);
         updateButton.setOnClickListener(new OnClickListener() {
             public void onClick(View arg0) {
-                Window window = getWindow();
-                window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_INDETERMINATE_ON);
-                window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_ON);
                 updater.update();
             }
         });
@@ -110,7 +108,8 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
     protected void onResume() {
         super.onResume();
         sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI);
-        locationManager.requestLocationUpdates(locationProviderName, 60 * 1000, 0f, this);
+        locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 60 * 1000, 0, this);
+        locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 60 * 1000, 0, this);
     }
 
     @Override
@@ -142,9 +141,6 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
     }
 
     public void onLocationChanged(Location loc) {
-        Window window = getWindow();
-        window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_INDETERMINATE_ON);
-        window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_ON);
         updater.updateLocation(loc);
     }
 
@@ -185,7 +181,61 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
                 + ", "
                 + timeFormat.format(now) + " " 
                 + dateFormat.format(now);
-    }       
+    } 
+    
+    /** Determines whether one Location reading is better than the current Location fix
+      * @param location  The new Location that you want to evaluate
+      * @param currentBestLocation  The current Location fix, to which you want to compare the new one
+      */
+    protected boolean isBetterLocation(Location location, Location currentBestLocation) {
+        if (currentBestLocation == null) {
+            // A new location is always better than no location
+            return true;
+        }
+
+        // Check whether the new location fix is newer or older
+        long timeDelta = location.getTime() - currentBestLocation.getTime();
+        boolean isSignificantlyNewer = timeDelta > TWO_MINUTES;
+        boolean isSignificantlyOlder = timeDelta < -TWO_MINUTES;
+        boolean isNewer = timeDelta > 0;
+
+        // If it's been more than two minutes since the current location, use the new location
+        // because the user has likely moved
+        if (isSignificantlyNewer) {
+            return true;
+        // If the new location is more than two minutes older, it must be worse
+        } else if (isSignificantlyOlder) {
+            return false;
+        }
+
+        // Check whether the new location fix is more or less accurate
+        int accuracyDelta = (int) (location.getAccuracy() - currentBestLocation.getAccuracy());
+        boolean isLessAccurate = accuracyDelta > 0;
+        boolean isMoreAccurate = accuracyDelta < 0;
+        boolean isSignificantlyLessAccurate = accuracyDelta > 200;
+
+        // Check if the old and new location are from the same provider
+        boolean isFromSameProvider = isSameProvider(location.getProvider(),
+                currentBestLocation.getProvider());
+
+        // Determine location quality using a combination of timeliness and accuracy
+        if (isMoreAccurate) {
+            return true;
+        } else if (isNewer && !isLessAccurate) {
+            return true;
+        } else if (isNewer && !isSignificantlyLessAccurate && isFromSameProvider) {
+            return true;
+        }
+        return false;
+    }
+
+    /** Checks whether two providers are the same */
+    private boolean isSameProvider(String provider1, String provider2) {
+        if (provider1 == null) {
+          return provider2 == null;
+        }
+        return provider1.equals(provider2);
+    }
     
     private class Updater implements Runnable {
         private Location location;
@@ -193,8 +243,10 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
         
         public void updateLocation(Location location) {
             synchronized (this) {
-                this.location = location;
-                notify();
+                if (isBetterLocation(location, this.location)) {
+                    this.location = location;
+                    notify();
+                }
             }
         }
         
@@ -207,12 +259,14 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
         public void run() {
             try {
                 while (!quit) {
+                    Location currentLocation = null;
                     synchronized (this) {
                         wait();
+                        currentLocation = location;
                     }
                     
                     if (location != null) {                    
-                        updatePlaneList();
+                        updatePlaneList(currentLocation);
                     } else {
                         handler.post(new Runnable() {                            
                             public void run() {
@@ -227,9 +281,12 @@ public class WhatPlane extends Activity implements LocationListener, SensorEvent
             }
         }
 
-        private void updatePlaneList() {
+        private void updatePlaneList(final Location location) {
             handler.post(new Runnable() {
                 public void run() {
+                    Window window = getWindow();
+                    window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_INDETERMINATE_ON);
+                    window.setFeatureInt(Window.FEATURE_PROGRESS, Window.PROGRESS_VISIBILITY_ON);
                     Button updateButton = (Button)findViewById(R.id.UpdateButton);
                     updateButton.setEnabled(false);
                 }
